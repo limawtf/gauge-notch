@@ -6,7 +6,7 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_DIR"
 
 APP="Gauge.app"
-[ -d "$APP" ] || bash scripts/make-app.sh
+bash scripts/make-app.sh # sempre rebuilda: reusar um .app stale gera DMG da versao errada
 
 VERSION="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")"
 DIST="$REPO_DIR/dist"
