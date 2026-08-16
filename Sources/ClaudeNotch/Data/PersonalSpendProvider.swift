@@ -108,6 +108,7 @@ func runCcusageDailyJSON() -> Data? {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
     process.arguments = [resolveCcusagePath(), "daily", "--json"]
+    process.environment = augmentedPATHEnvironment()
     return runProcessCapturingStdout(process, timeout: ccusageTimeout)
 }
 

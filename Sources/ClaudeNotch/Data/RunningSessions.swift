@@ -49,6 +49,7 @@ func runClaudeAgentsJSON() -> Data? {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
     process.arguments = [resolveClaudePath(), "agents", "--json"]
+    process.environment = augmentedPATHEnvironment()
     return runProcessCapturingStdout(process, timeout: 8)
 }
 

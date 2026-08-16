@@ -104,6 +104,26 @@ func resolveCcusagePath() -> String {
     return "ccusage" // fallback: resolvido via /usr/bin/env (PATH herdado, se houver)
 }
 
+/// Ambiente com PATH aumentado pros processos filhos: o caminho absoluto do ccusage
+/// (resolveCcusagePath) NAO basta quando o app e lancado por login item/Finder -- o
+/// ccusage do Homebrew e um script Node cujo shebang (#!/usr/bin/env node) resolve
+/// `node` pelo PATH do filho, e o PATH do launchd (/usr/bin:/bin:/usr/sbin:/sbin) nao
+/// tem /opt/homebrew/bin: o spawn morre com 127 e o custo fica "-" pra sempre, mesmo
+/// com ccusage instalado. Prepend (sem duplicar) dos prefixos de pacote conhecidos;
+/// o `base` parametrizado existe so pra testar sem depender do env do runner.
+func augmentedPATHEnvironment(
+    base: [String: String] = ProcessInfo.processInfo.environment
+) -> [String: String] {
+    var env = base
+    let extras = ["/opt/homebrew/bin", "/usr/local/bin", NSHomeDirectory() + "/.local/bin"]
+    var parts = (env["PATH"] ?? "").split(separator: ":").map(String.init)
+    for extra in extras.reversed() where !parts.contains(extra) {
+        parts.insert(extra, at: 0)
+    }
+    env["PATH"] = parts.joined(separator: ":")
+    return env
+}
+
 /// Timeout de verdade pro processo do ccusage: sem isso, um filho travado (ex. stderr
 /// cheio, ver nota de `runCcusageSessionJSON`) deixa `refreshing` preso pra sempre no
 /// SessionCostProvider e os custos da pagina Agentes congelam ate reiniciar o app.
@@ -169,6 +189,7 @@ func runCcusageSessionJSON() -> Data? {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
     process.arguments = [resolveCcusagePath(), "session", "--json"]
+    process.environment = augmentedPATHEnvironment()
     return runProcessCapturingStdout(process, timeout: ccusageTimeout)
 }
 
