@@ -1,7 +1,7 @@
 {
-  "version": "0.1.2",
+  "version": "0.1.3",
   "notes": "Melhorias de performance, estabilidade e correcoes de bugs.",
-  "dmg": "https://github.com/limawtf/gauge-notch/releases/download/v0.1.2/Gauge-0.1.2.dmg",
-  "sha256": "690ae14e3209be798bb688abfa73bdac8afba3003e847005c1a0285032f9edbe",
+  "dmg": "https://github.com/limawtf/gauge-notch/releases/download/v0.1.3/Gauge-0.1.3.dmg",
+  "sha256": "d75defc467170716b35ade7aff84d6061732974560ce4f7031f5a818fa47e6d1",
   "minMacOS": "13.0"
 }
