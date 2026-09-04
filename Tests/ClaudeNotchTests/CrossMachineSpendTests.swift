@@ -129,6 +129,21 @@ struct CrossMachineSpendMergeTests {
 /// remote read.
 @Suite("CrossMachineSpendProvider: escreve particao local, le remotas com skip-and-keep")
 struct CrossMachineSpendProviderTests {
+    /// As fixtures sao datadas (2026-07-14), entao o merge precisa receber ESSE dia como
+    /// "hoje". Sem isso o teste so passava no proprio dia em que foi escrito: o bucket de
+    /// hoje virava 0 no dia seguinte (mergedSpend usa `Date()` por default).
+    private func utcCalendar() -> Calendar {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "UTC")!
+        return cal
+    }
+
+    private var fixtureToday: Date {
+        var comps = DateComponents()
+        comps.year = 2026; comps.month = 7; comps.day = 14; comps.hour = 12
+        return utcCalendar().date(from: comps)!
+    }
+
     /// Cria de fato o tmpDir raiz (simula o iCloud Drive "ligado": a pasta-mae existe),
     /// senao `SyncFolder.isAvailable` fica false e nada e' escrito no disco.
     private func makeFolder() throws -> (SyncFolder, URL) {
@@ -163,7 +178,7 @@ struct CrossMachineSpendProviderTests {
         await provider.refreshIfNeeded(
             localDaily: ["2026-07-14": 1.0], accountEmail: nil, label: "Local", appVersion: "0.1.0"
         )
-        let merged = await provider.mergedSpend(localDaily: ["2026-07-14": 1.0], accountEmail: nil)
+        let merged = await provider.mergedSpend(localDaily: ["2026-07-14": 1.0], accountEmail: nil, today: fixtureToday, calendar: utcCalendar())
 
         #expect(merged.today == 10.0)
         #expect(await provider.remoteMachineCount() == 1)
@@ -179,7 +194,7 @@ struct CrossMachineSpendProviderTests {
         await provider.refreshIfNeeded(
             localDaily: ["2026-07-14": 1.0], accountEmail: nil, label: "Local", appVersion: "0.1.0"
         )
-        let firstMerge = await provider.mergedSpend(localDaily: ["2026-07-14": 1.0], accountEmail: nil)
+        let firstMerge = await provider.mergedSpend(localDaily: ["2026-07-14": 1.0], accountEmail: nil, today: fixtureToday, calendar: utcCalendar())
         #expect(firstMerge.today == 10.0)
 
         // Corrompe o arquivo remoto (ex. iCloud escrevendo no meio de um sync).
@@ -188,7 +203,7 @@ struct CrossMachineSpendProviderTests {
         await provider.refreshIfNeeded(
             localDaily: ["2026-07-14": 1.0], accountEmail: nil, label: "Local", appVersion: "0.1.0"
         )
-        let secondMerge = await provider.mergedSpend(localDaily: ["2026-07-14": 1.0], accountEmail: nil)
+        let secondMerge = await provider.mergedSpend(localDaily: ["2026-07-14": 1.0], accountEmail: nil, today: fixtureToday, calendar: utcCalendar())
 
         // O total NAO zera a contribuicao da remota so porque um ciclo bateu num
         // arquivo corrompido: mantem o ultimo valor bom.
@@ -205,7 +220,7 @@ struct CrossMachineSpendProviderTests {
         await provider.refreshIfNeeded(
             localDaily: ["2026-07-14": 1.0], accountEmail: nil, label: "Local", appVersion: "0.1.0"
         )
-        let firstMerge = await provider.mergedSpend(localDaily: ["2026-07-14": 1.0], accountEmail: nil)
+        let firstMerge = await provider.mergedSpend(localDaily: ["2026-07-14": 1.0], accountEmail: nil, today: fixtureToday, calendar: utcCalendar())
         #expect(firstMerge.today == 10.0)
 
         // Arquivo remoto some do disco (iCloud ainda nao materializou, ou a maquina
@@ -215,7 +230,7 @@ struct CrossMachineSpendProviderTests {
         await provider.refreshIfNeeded(
             localDaily: ["2026-07-14": 1.0], accountEmail: nil, label: "Local", appVersion: "0.1.0"
         )
-        let secondMerge = await provider.mergedSpend(localDaily: ["2026-07-14": 1.0], accountEmail: nil)
+        let secondMerge = await provider.mergedSpend(localDaily: ["2026-07-14": 1.0], accountEmail: nil, today: fixtureToday, calendar: utcCalendar())
 
         #expect(secondMerge.today == 10.0)
         #expect(await provider.remoteMachineCount() == 1) // ainda cacheada, nao sumiu
@@ -234,7 +249,7 @@ struct CrossMachineSpendProviderTests {
         await provider.refreshIfNeeded(
             localDaily: ["2026-07-14": 3.0], accountEmail: nil, label: "Local", appVersion: "0.1.0"
         )
-        let merged = await provider.mergedSpend(localDaily: ["2026-07-14": 3.0], accountEmail: nil)
+        let merged = await provider.mergedSpend(localDaily: ["2026-07-14": 3.0], accountEmail: nil, today: fixtureToday, calendar: utcCalendar())
 
         #expect(merged.today == 3.0)
         #expect(await provider.remoteMachineCount() == 0)
