@@ -62,8 +62,11 @@ struct PanelView: View {
                         .foregroundStyle(Theme.secondaryText)
                 }
                 Spacer()
-                if snapshot.stale != nil {
-                    Text("cached")
+                if let stale = snapshot.stale {
+                    // "cached" so' quando ha mesmo um valor cacheado pra mostrar; sem
+                    // nenhum dado, o selo diz o MOTIVO (ex. "429 (busy)") em vez de fingir
+                    // que o painel esta servindo cache.
+                    Text(snapshot.hasAnyGauge ? "cached" : stale)
                         .font(.system(size: 9, weight: .semibold))
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)

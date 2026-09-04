@@ -78,13 +78,22 @@ struct ProfileResponse: Codable, Equatable {
 }
 
 enum UsageAPIError: Error {
-    case http(Int)
+    /// `retryAfter` = header `Retry-After` em segundos, quando o servidor mandou (429).
+    /// Quem trata decide a espera (ver `UsageBackoff`).
+    case http(Int, retryAfter: TimeInterval?)
     case network(Error)
     case decode(Error)
 }
 
+/// O que o UsageService precisa da rede. Existe pra o servico poder ser testado com um
+/// duble (comportamento sob 429/erro) sem bater na API de verdade.
+protocol UsageFetching: AnyObject {
+    func fetchUsageRaw(token: String) async throws -> Data
+    func fetchProfileRaw(token: String) async throws -> Data
+}
+
 /// Cliente HTTP fino: GET oauth/usage e oauth/profile, header anthropic-beta + Bearer, timeout 10s.
-final class UsageAPI {
+final class UsageAPI: UsageFetching {
     static let usageURL = URL(string: "https://api.anthropic.com/api/oauth/usage")!
     static let profileURL = URL(string: "https://api.anthropic.com/api/oauth/profile")!
 
@@ -114,7 +123,10 @@ final class UsageAPI {
         }
 
         if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-            throw UsageAPIError.http(http.statusCode)
+            let retryAfter = UsageBackoff.parseRetryAfter(
+                http.value(forHTTPHeaderField: "Retry-After")
+            )
+            throw UsageAPIError.http(http.statusCode, retryAfter: retryAfter)
         }
         return data
     }

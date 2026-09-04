@@ -6,7 +6,11 @@ struct GaugeRow: View {
     let gauge: Gauge?
     var compact: Bool = false
 
-    private var pct: Int { gauge?.utilizationPct ?? 0 }
+    /// nil = NAO ha dado (fetch falhou e nao ha cache). Nunca mostrar isso como "0%":
+    /// 0% verde e' uma afirmacao ("voce nao usou nada") e era exatamente o que fazia o
+    /// painel parecer sincronizado estando cego.
+    private var pct: Int? { gauge?.utilizationPct }
+    private var barPct: Int { pct ?? 0 }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -15,10 +19,10 @@ struct GaugeRow: View {
                     .font(.system(size: compact ? 11 : 12.5, weight: .medium))
                     .foregroundStyle(compact ? Theme.secondaryText : Theme.primaryText)
                 Spacer()
-                Text("\(pct)%")
+                Text(pct.map { "\($0)%" } ?? "-")
                     .font(.system(size: compact ? 11 : 12.5, weight: .semibold, design: .rounded))
                     .monospacedDigit()
-                    .foregroundStyle(Theme.color(forPct: pct))
+                    .foregroundStyle(pct.map { Theme.color(forPct: $0) } ?? Theme.tertiaryText)
             }
 
             GeometryReader { geo in
@@ -26,8 +30,8 @@ struct GaugeRow: View {
                     Capsule()
                         .fill(Theme.cardBackground)
                     Capsule()
-                        .fill(Theme.color(forPct: pct))
-                        .frame(width: geo.size.width * CGFloat(min(max(pct, 0), 100)) / 100)
+                        .fill(pct.map { Theme.color(forPct: $0) } ?? Theme.tertiaryText)
+                        .frame(width: geo.size.width * CGFloat(min(max(barPct, 0), 100)) / 100)
                 }
             }
             .frame(height: compact ? 4 : 5)

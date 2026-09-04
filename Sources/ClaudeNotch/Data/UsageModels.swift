@@ -40,6 +40,12 @@ struct UsageSnapshot: Equatable {
         planLabel: "", stale: nil, state: .noToken, fetchedAt: nil
     )
 
+    /// True quando ha ao menos um medidor com numero (fresco ou de cache). False = o app
+    /// esta cego (fetch falhou e nao ha cache), e a UI precisa dizer isso em vez de 0%.
+    var hasAnyGauge: Bool {
+        fiveHour != nil || sevenDay != nil || opus != nil || sonnet != nil
+    }
+
     /// Pior percentual entre 5h e semanal (aciona o AlertPeek).
     var worstPct: Int {
         max(fiveHour?.utilizationPct ?? 0, sevenDay?.utilizationPct ?? 0)

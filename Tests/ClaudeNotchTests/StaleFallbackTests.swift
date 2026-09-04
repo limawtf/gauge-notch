@@ -6,28 +6,28 @@ import Testing
 struct StaleFallbackTests {
     @Test("401 -> HTTP 401, expirado")
     func unauthorized() {
-        let mapped = mapUsageError(UsageAPIError.http(401))
+        let mapped = mapUsageError(UsageAPIError.http(401, retryAfter: nil))
         #expect(mapped.reason == "HTTP 401")
         #expect(mapped.expired == true)
     }
 
     @Test("403 -> HTTP 403, expirado")
     func forbidden() {
-        let mapped = mapUsageError(UsageAPIError.http(403))
+        let mapped = mapUsageError(UsageAPIError.http(403, retryAfter: nil))
         #expect(mapped.reason == "HTTP 403")
         #expect(mapped.expired == true)
     }
 
     @Test("429 -> '429 (busy)', nao expirado (serve cache)")
     func rateLimited() {
-        let mapped = mapUsageError(UsageAPIError.http(429))
+        let mapped = mapUsageError(UsageAPIError.http(429, retryAfter: nil))
         #expect(mapped.reason == "429 (busy)")
         #expect(mapped.expired == false)
     }
 
     @Test("outro HTTP -> 'HTTP n', nao expirado")
     func otherHTTP() {
-        let mapped = mapUsageError(UsageAPIError.http(500))
+        let mapped = mapUsageError(UsageAPIError.http(500, retryAfter: nil))
         #expect(mapped.reason == "HTTP 500")
         #expect(mapped.expired == false)
     }

@@ -15,16 +15,16 @@ func fiveHourResetPassed(_ resp: UsageResponse, now: Date = Date()) -> Bool {
     return date <= now
 }
 
-/// Mapeia um erro de rede/HTTP pro (motivo de stale, se e expirado). Livre pra testar sem
-/// precisar de rede de verdade. 401/403 -> expired; 429 -> "429 (busy)"; outro HTTP -> "HTTP n";
-/// qualquer outra coisa -> "offline".
-func mapUsageError(_ error: Error) -> (reason: String, expired: Bool) {
-    if let apiError = error as? UsageAPIError, case .http(let code) = apiError {
-        if code == 401 || code == 403 { return ("HTTP \(code)", true) }
-        if code == 429 { return ("429 (busy)", false) }
-        return ("HTTP \(code)", false)
+/// Mapeia um erro de rede/HTTP pro (motivo de stale, se e expirado, quanto o servidor
+/// pediu de espera). Livre pra testar sem precisar de rede de verdade. 401/403 -> expired;
+/// 429 -> "429 (busy)"; outro HTTP -> "HTTP n"; qualquer outra coisa -> "offline".
+func mapUsageError(_ error: Error) -> (reason: String, expired: Bool, retryAfter: TimeInterval?) {
+    if let apiError = error as? UsageAPIError, case .http(let code, let retryAfter) = apiError {
+        if code == 401 || code == 403 { return ("HTTP \(code)", true, retryAfter) }
+        if code == 429 { return ("429 (busy)", false, retryAfter) }
+        return ("HTTP \(code)", false, retryAfter)
     }
-    return ("offline", false)
+    return ("offline", false, nil)
 }
 
 /// Servico de dados: entrega um UsageSnapshot observavel, com cache/TTL e fallback (porta do plugin Python).
@@ -32,10 +32,18 @@ func mapUsageError(_ error: Error) -> (reason: String, expired: Bool) {
 final class UsageService: ObservableObject {
     @Published private(set) var snapshot: UsageSnapshot = .initial
 
-    private let api = UsageAPI()
-    private let cache = UsageCache()
+    private let api: UsageFetching
+    private let cache: UsageCache
+    private let credentialsProvider: () -> KeychainReader.Credentials?
     private let decoder = JSONDecoder()
     private var timer: Timer?
+
+    /// Portao de rede: depois de uma falha, respeita o `Retry-After`/backoff em vez de
+    /// deixar o timer de 60s e cada hover baterem na API de novo (ver `UsageBackoff`).
+    private var gate = UsageFetchGate()
+    /// Ultimo motivo de falha, pra continuar marcando o snapshot como stale enquanto o
+    /// portao esta fechado (nada de fingir que o dado e fresco so porque nao tentamos).
+    private var lastFailure: (reason: String, expired: Bool)?
 
     /// Refresh em andamento, se houver. Evita que o timer de 60s e um hover concorrente
     /// disparem 2 fetches ao mesmo tempo (e um mais lento sobrescrever o resultado do outro).
@@ -59,11 +67,24 @@ final class UsageService: ObservableObject {
         return account
     }
 
-    init() {}
+    init(
+        api: UsageFetching = UsageAPI(),
+        cache: UsageCache = UsageCache(),
+        credentialsProvider: @escaping () -> KeychainReader.Credentials? = {
+            KeychainReader.readCredentials()
+        }
+    ) {
+        self.api = api
+        self.cache = cache
+        self.credentialsProvider = credentialsProvider
+    }
 
     /// Inicializa com um snapshot fixo, sem tocar rede. Usado pelo render headless de
     /// verificacao (SnapshotRenderer) pra montar o PanelView num estado deterministico.
     init(snapshot: UsageSnapshot) {
+        self.api = UsageAPI()
+        self.cache = UsageCache()
+        self.credentialsProvider = { KeychainReader.readCredentials() }
         self.snapshot = snapshot
     }
 
@@ -82,46 +103,48 @@ final class UsageService: ObservableObject {
         timer = nil
     }
 
-    /// Refresh manual (botao do rodape): apaga o cache de usage (o proprio E o fast-path
-    /// do plugin SwiftBar, senao o passo 1b de `loadUsage` devolve o snapshot velho do
-    /// plugin como se fosse fresco) pra forcar um fetch ao vivo, depois roda o refresh
-    /// normal (porta do "Refresh" do plugin, que faz `rm -f USAGE_CACHE` antes de re-render).
+    /// Refresh manual (botao do rodape): ignora o TTL do cache E o backoff, e vai direto na
+    /// rede. NAO apaga mais o arquivo de cache antes de tentar (era um bug: com a API fora
+    /// do ar/429 o fetch falhava e o ultimo valor bom ja tinha sido destruido, entao o
+    /// painel ficava sem numero nenhum). O arquivo so' e' sobrescrito por um fetch que deu
+    /// certo -- e enquanto isso ele segue servindo de fallback.
     func forceRefresh() async {
-        cache.remove(cache.usageURL)
-        cache.remove(cache.pluginUsageURL)
-        await refresh()
+        await refresh(force: true)
     }
 
     /// Tambem chamavel diretamente no hover (gated por TTL, entao nao bate rede toda hora).
     /// Coalesce chamadas concorrentes: se ja tem um refresh rodando, so espera ele terminar
     /// em vez de comecar outro fetch em paralelo.
-    func refresh() async {
+    func refresh(force: Bool = false) async {
         if let inFlightRefresh {
             await inFlightRefresh.value
-            return
+            // Um refresh manual nao pode se contentar com o resultado de um refresh de
+            // fundo que talvez nem tenha ido na rede (portao fechado): tenta o dele.
+            if !force { return }
         }
-        let task = Task { await performRefresh() }
+        let task = Task { await performRefresh(force: force) }
         inFlightRefresh = task
         await task.value
         inFlightRefresh = nil
     }
 
-    private func performRefresh() async {
+    private func performRefresh(force: Bool = false) async {
         // Independente do Keychain (fonte separada, ~/.claude.json): mostra a conta logada
         // mesmo que o token de usage esteja ausente/expirado.
         let account = currentAccountCached()
 
         // off-main: readCredentials roda um subprocesso (`security`) e pode esperar um prompt
         // do Keychain na 1a vez; nao pode bloquear a MainActor.
+        let readCredentials = credentialsProvider
         guard let creds = await Task.detached(priority: .utility, operation: {
-            KeychainReader.readCredentials()
+            readCredentials()
         }).value else {
             snapshot = .initial
             snapshot.account = account
             return
         }
 
-        let outcome = await loadUsage(token: creds.accessToken)
+        let outcome = await loadUsage(token: creds.accessToken, force: force)
 
         guard let resp = outcome.response else {
             // Sem nenhum cache utilizavel: so agora "expirado" faz sentido (nao ha nada pra mostrar).
@@ -158,32 +181,47 @@ final class UsageService: ObservableObject {
 
     // MARK: - Usage (cache + fetch + fallback)
 
-    private func loadUsage(token: String) async -> UsageOutcome {
-        // 1. cache proprio fresco e com janela ainda nao virada -> nao bate rede
-        if let cached = cache.readFresh(cache.usageURL, ttl: UsageCache.usageTTL),
-           let decoded = try? decoder.decode(UsageResponse.self, from: cached),
-           !fiveHourResetPassed(decoded) {
-            return UsageOutcome(response: decoded, staleReason: nil, expired: false)
+    private func loadUsage(token: String, force: Bool = false) async -> UsageOutcome {
+        if !force {
+            // 1. cache proprio fresco e com janela ainda nao virada -> nao bate rede
+            if let cached = cache.readFresh(cache.usageURL, ttl: UsageCache.usageTTL),
+               let decoded = try? decoder.decode(UsageResponse.self, from: cached),
+               !fiveHourResetPassed(decoded) {
+                return UsageOutcome(response: decoded, staleReason: nil, expired: false)
+            }
+
+            // 1b. otimizacao opcional: fast-path no cache que o plugin SwiftBar ja mantem
+            if let pluginData = cache.readFresh(cache.pluginUsageURL, ttl: UsageCache.usageTTL),
+               let decoded = try? decoder.decode(UsageResponse.self, from: pluginData),
+               !fiveHourResetPassed(decoded) {
+                cache.write(cache.usageURL, data: pluginData)
+                return UsageOutcome(response: decoded, staleReason: nil, expired: false)
+            }
         }
 
-        // 1b. otimizacao opcional: fast-path no cache que o plugin SwiftBar ja mantem
-        if let pluginData = cache.readFresh(cache.pluginUsageURL, ttl: UsageCache.usageTTL),
-           let decoded = try? decoder.decode(UsageResponse.self, from: pluginData),
-           !fiveHourResetPassed(decoded) {
-            cache.write(cache.usageURL, data: pluginData)
-            return UsageOutcome(response: decoded, staleReason: nil, expired: false)
+        // 1c. falhou ha pouco e o servidor pediu espera (429 com Retry-After, rede fora):
+        // segurar a rede ate o deadline, servindo o ultimo valor bom marcado como stale.
+        guard gate.shouldFetch(now: Date(), force: force) else {
+            let failure = lastFailure ?? (reason: "aguardando", expired: false)
+            return fallbackUsage(reason: failure.reason, expired: failure.expired)
         }
 
         // 2. fetch ao vivo
         do {
             let raw = try await api.fetchUsageRaw(token: token)
             guard let decoded = try? decoder.decode(UsageResponse.self, from: raw) else {
+                // Resposta 200 que nao decodifica nao e' culpa de rate limit: nao fecha o
+                // portao (senao um deploy quebrado da API cegaria o app por 15 min).
                 return fallbackUsage(reason: "offline", expired: false)
             }
             cache.write(cache.usageURL, data: raw)
+            gate.recordSuccess()
+            lastFailure = nil
             return UsageOutcome(response: decoded, staleReason: nil, expired: false)
         } catch {
             let mapped = mapUsageError(error)
+            gate.recordFailure(retryAfter: mapped.retryAfter, now: Date())
+            lastFailure = (reason: mapped.reason, expired: mapped.expired)
             return fallbackUsage(reason: mapped.reason, expired: mapped.expired)
         }
     }
